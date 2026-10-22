@@ -5,6 +5,16 @@ declare(strict_types=1);
 $pageTitle = $pageTitle ?? 'DealExit | بيع وشراء المشاريع';
 $currentPage = basename($_SERVER['PHP_SELF'] ?? 'index.php');
 $assetPrefix = $assetPrefix ?? '';
+
+// Auth-aware navigation: start session so we can check login state.
+if (file_exists(__DIR__ . '/auth.php')) {
+    require_once __DIR__ . '/auth.php';
+    auth_start_session();
+}
+if (file_exists(__DIR__ . '/csrf.php')) {
+    require_once __DIR__ . '/csrf.php';
+}
+$isUserLoggedIn = isset($_SESSION['user_id']);
 ?>
 <!doctype html>
 <html lang="ar" dir="rtl" data-bs-theme="light">
@@ -39,7 +49,22 @@ $assetPrefix = $assetPrefix ?? '';
                 <li class="nav-item"><a class="nav-link" href="<?= $assetPrefix ?>index.php#listings">الفرص المعروضة</a></li>
                 <li class="nav-item"><a class="nav-link" href="<?= $assetPrefix ?>index.php#how-it-works">كيف يعمل الموقع؟</a></li>
             </ul>
-            <a class="btn-solid theme-primary site-nav-cta" href="<?= $assetPrefix ?>index.php#how-it-works">اعرض مشروعك <span aria-hidden="true">←</span></a>
+            <?php if ($isUserLoggedIn): ?>
+                <div class="d-flex align-items-center gap-2 flex-wrap">
+                    <a class="btn-outline theme-secondary" href="<?= $assetPrefix ?>authentication/profile.php" style="padding:8px 14px;border-radius:10px;border:1px solid #d8e0ec;font-size:.88rem;font-weight:700;color:var(--de-ink);">
+                        <?= htmlspecialchars($_SESSION['user_name'] ?? 'حسابي', ENT_QUOTES, 'UTF-8') ?>
+                    </a>
+                    <form method="post" action="<?= $assetPrefix ?>authentication/logout.php" style="margin:0;">
+                        <?= function_exists('csrf_field') ? csrf_field() : '' ?>
+                        <button type="submit" class="btn-solid theme-primary site-nav-cta" style="padding:8px 14px;border-radius:10px;font-size:.88rem;cursor:pointer;">تسجيل الخروج</button>
+                    </form>
+                </div>
+            <?php else: ?>
+                <div class="d-flex align-items-center gap-2 flex-wrap">
+                    <a class="btn-outline theme-secondary" href="<?= $assetPrefix ?>authentication/login.php" style="padding:8px 14px;border-radius:10px;border:1px solid #d8e0ec;font-size:.88rem;font-weight:700;color:var(--de-ink);">تسجيل الدخول</a>
+                    <a class="btn-solid theme-primary site-nav-cta" href="<?= $assetPrefix ?>authentication/register.php">إنشاء حساب <span aria-hidden="true">←</span></a>
+                </div>
+            <?php endif; ?>
             </div>
         </dialog>
     </div>
