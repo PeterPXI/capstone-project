@@ -1,0 +1,2 @@
+# Deny script execution
+php_flag engine off

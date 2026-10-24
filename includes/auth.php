@@ -6,10 +6,23 @@ declare(strict_types=1);
  * Authentication helpers for DealExit.
  *
  * Provides functions for session management, login/logout,
- * registration, profile updates, and access control.
+ * registration, profile updates, avatar upload, and access control.
  *
  * Relies on the shared $pdo connection from config.php.
  */
+
+/* ------------------------------------------------------------------ */
+/*  Constants                                                         */
+/* ------------------------------------------------------------------ */
+
+/** Allowed avatar MIME types. */
+define('AVATAR_ALLOWED_TYPES', ['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+
+/** Maximum avatar file size in bytes (2 MB). */
+define('AVATAR_MAX_SIZE', 2 * 1024 * 1024);
+
+/** Directory where avatars are stored (relative to project root). */
+define('AVATAR_UPLOAD_DIR', __DIR__ . '/../uploads/avatars/');
 
 /* ------------------------------------------------------------------ */
 /*  Session bootstrap                                                 */
@@ -71,7 +84,7 @@ function current_user(PDO $pdo): ?array
     }
 
     $stmt = $pdo->prepare(
-        'SELECT id, full_name, email, phone, account_type, account_status, created_at, updated_at
+        'SELECT id, full_name, email, phone, avatar, account_type, account_status, created_at, updated_at
          FROM users WHERE id = ? LIMIT 1'
     );
     $stmt->execute([$_SESSION['user_id']]);
@@ -85,6 +98,18 @@ function current_user(PDO $pdo): ?array
 
     $cache = $user;
     return $cache;
+}
+
+/**
+ * Get the avatar URL for a user, or a default placeholder.
+ */
+function get_avatar_url(string $assetPrefix, ?string $avatarPath): string
+{
+    if ($avatarPath && file_exists(__DIR__ . '/../' . $avatarPath)) {
+        return $assetPrefix . $avatarPath;
+    }
+    // Return a data URI for a default avatar (simple SVG circle with user icon).
+    return "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='50' fill='%23e8efff'/%3E%3Ccircle cx='50' cy='38' r='16' fill='%232457d6'/%3E%3Cellipse cx='50' cy='78' rx='28' ry='20' fill='%232457d6'/%3E%3C/svg%3E";
 }
 
 /* ------------------------------------------------------------------ */
@@ -264,11 +289,64 @@ function auth_logout(): void
 }
 
 /* ------------------------------------------------------------------ */
+/*  Avatar upload                                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Handle avatar file upload for a user.
+ *
+ * @return array{success: bool, path: string, error: string}
+ */
+function auth_upload_avatar(array $file, int $userId): array
+{
+    if ($file['error'] === UPLOAD_ERR_NO_FILE) {
+        return ['success' => true, 'path' => '', 'error' => ''];
+    }
+
+    if ($file['error'] !== UPLOAD_ERR_OK) {
+        return ['success' => false, 'path' => '', 'error' => 'حدث خطأ أثناء رفع الصورة.'];
+    }
+
+    if ($file['size'] > AVATAR_MAX_SIZE) {
+        return ['success' => false, 'path' => '', 'error' => 'حجم الصورة يجب ألا يتجاوز 2 ميجابايت.'];
+    }
+
+    $finfo = new finfo(FILEINFO_MIME_TYPE);
+    $mime = $finfo->file($file['tmp_name']);
+
+    if (!in_array($mime, AVATAR_ALLOWED_TYPES, true)) {
+        return ['success' => false, 'path' => '', 'error' => 'صيغة الصورة غير مدعومة. استخدم JPG أو PNG أو WebP أو GIF.'];
+    }
+
+    $ext = match ($mime) {
+        'image/jpeg' => 'jpg',
+        'image/png'  => 'png',
+        'image/webp' => 'webp',
+        'image/gif'  => 'gif',
+        default      => 'jpg',
+    };
+
+    if (!is_dir(AVATAR_UPLOAD_DIR)) {
+        mkdir(AVATAR_UPLOAD_DIR, 0755, true);
+    }
+
+    $filename = 'avatar_' . $userId . '_' . bin2hex(random_bytes(8)) . '.' . $ext;
+    $destPath = AVATAR_UPLOAD_DIR . $filename;
+
+    if (!move_uploaded_file($file['tmp_name'], $destPath)) {
+        return ['success' => false, 'path' => '', 'error' => 'فشل في حفظ الصورة. تأكد من صلاحيات المجلد.'];
+    }
+
+    $relativePath = 'uploads/avatars/' . $filename;
+    return ['success' => true, 'path' => $relativePath, 'error' => ''];
+}
+
+/* ------------------------------------------------------------------ */
 /*  Profile update                                                    */
 /* ------------------------------------------------------------------ */
 
 /**
- * Update the authenticated user's profile (name, email, phone, password).
+ * Update the authenticated user's profile (name, email, phone, password, avatar).
  * Does NOT allow changing account_type or account_status.
  *
  * @return array{success: bool, errors: string[]}
@@ -281,7 +359,8 @@ function auth_update_profile(
     string $phone,
     string $currentPassword,
     string $newPassword,
-    string $newPasswordConfirm
+    string $newPasswordConfirm,
+    ?array $avatarFile = null
 ): array {
     $errors = [];
 
@@ -316,6 +395,25 @@ function auth_update_profile(
         }
     }
 
+    // --- Handle avatar upload ---
+    $newAvatarPath = null;
+    if ($avatarFile !== null && $avatarFile['error'] !== UPLOAD_ERR_NO_FILE) {
+        $avatarResult = auth_upload_avatar($avatarFile, $userId);
+        if (!$avatarResult['success']) {
+            $errors[] = $avatarResult['error'];
+        } else {
+            $newAvatarPath = $avatarResult['path'];
+
+            // Delete old avatar file
+            $stmt = $pdo->prepare('SELECT avatar FROM users WHERE id = ? LIMIT 1');
+            $stmt->execute([$userId]);
+            $oldAvatar = $stmt->fetchColumn();
+            if ($oldAvatar && file_exists(__DIR__ . '/../' . $oldAvatar)) {
+                @unlink(__DIR__ . '/../' . $oldAvatar);
+            }
+        }
+    }
+
     // --- Password change (optional) ---
     $changePassword = ($newPassword !== '');
     if ($changePassword) {
@@ -340,18 +438,25 @@ function auth_update_profile(
     }
 
     // --- Build update query ---
+    $params = [$fullName, $email, $phone ?: null];
+    $sql = 'UPDATE users SET full_name = ?, email = ?, phone = ?';
+
+    if ($newAvatarPath !== null) {
+        $sql .= ', avatar = ?';
+        $params[] = $newAvatarPath;
+    }
+
     if ($changePassword) {
         $hash = password_hash($newPassword, PASSWORD_DEFAULT);
-        $stmt = $pdo->prepare(
-            'UPDATE users SET full_name = ?, email = ?, phone = ?, password_hash = ? WHERE id = ?'
-        );
-        $stmt->execute([$fullName, $email, $phone ?: null, $hash, $userId]);
-    } else {
-        $stmt = $pdo->prepare(
-            'UPDATE users SET full_name = ?, email = ?, phone = ? WHERE id = ?'
-        );
-        $stmt->execute([$fullName, $email, $phone ?: null, $userId]);
+        $sql .= ', password_hash = ?';
+        $params[] = $hash;
     }
+
+    $sql .= ' WHERE id = ?';
+    $params[] = $userId;
+
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
 
     // Keep session name in sync.
     $_SESSION['user_name'] = $fullName;
