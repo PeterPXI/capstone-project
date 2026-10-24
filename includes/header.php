@@ -25,6 +25,7 @@ $isUserLoggedIn = isset($_SESSION['user_id']);
     <title><?= htmlspecialchars($pageTitle, ENT_QUOTES, 'UTF-8') ?></title>
     <link rel="stylesheet" href="<?= $assetPrefix ?>assets/css/bootstrap.min.css">
     <link rel="stylesheet" href="<?= $assetPrefix ?>assets/css/site.css">
+    <link rel="stylesheet" href="<?= $assetPrefix ?>assets/css/auth.css">
 </head>
 <body>
 <nav class="navbar lg:navbar-expand site-navbar bg-1 fg-2">
